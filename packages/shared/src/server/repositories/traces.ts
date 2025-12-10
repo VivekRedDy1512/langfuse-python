@@ -34,6 +34,9 @@ import { recordDistribution } from "../instrumentation";
 import type { AnalyticsTraceEvent } from "../analytics-integrations/types";
 import { measureAndReturn } from "../clickhouse/measureAndReturn";
 import { DEFAULT_RENDERING_PROPS, RenderingProps } from "../utils/rendering";
+import { pyGet, pyPost } from "../python-backend/pythonBackendClient"; // adjust relative path
+
+
 
 /**
  * Checks if trace exists in clickhouse.
@@ -451,7 +454,7 @@ export const getTraceById = async ({
   fromTimestamp,
   renderingProps = DEFAULT_RENDERING_PROPS,
   clickhouseFeatureTag = "tracing",
-  preferredClickhouseService,
+  preferredClickhouseService, // kept only so callers don't break, we ignore it
   excludeInputOutput = false,
 }: {
   traceId: string;
@@ -471,12 +474,10 @@ export const getTraceById = async ({
       params: {
         traceId,
         projectId,
-        ...(timestamp
-          ? { timestamp: convertDateToClickhouseDateTime(timestamp) }
-          : {}),
-        ...(fromTimestamp
-          ? { fromTimestamp: convertDateToClickhouseDateTime(fromTimestamp) }
-          : {}),
+        timestamp: timestamp ? timestamp.toISOString() : undefined,
+        fromTimestamp: fromTimestamp ? fromTimestamp.toISOString() : undefined,
+        truncated: renderingProps.truncated ?? false,
+        excludeInputOutput,
       },
       tags: {
         feature: clickhouseFeatureTag,
@@ -486,56 +487,18 @@ export const getTraceById = async ({
         operation_name: "getTraceById",
       },
     },
-    fn: (input) => {
-      const inputColumn = excludeInputOutput
-        ? "''"
-        : renderingProps.truncated
-          ? `leftUTF8(input, ${env.LANGFUSE_SERVER_SIDE_IO_CHAR_LIMIT})`
-          : "input";
-      const outputColumn = excludeInputOutput
-        ? "''"
-        : renderingProps.truncated
-          ? `leftUTF8(output, ${env.LANGFUSE_SERVER_SIDE_IO_CHAR_LIMIT})`
-          : "output";
+    fn: async (input) => {
+      // Call Python backend instead of ClickHouse
+      const rows = await pyGet<TraceRecordReadType[]>(
+        "/traces/by-id",
+        input.params,
+      );
 
-      const query = `
-        SELECT
-          id,
-          name as name,
-          user_id as user_id,
-          metadata as metadata,
-          release as release,
-          version as version,
-          project_id,
-          environment,
-          public as public,
-          bookmarked as bookmarked,
-          tags,
-          ${inputColumn} as input,
-          ${outputColumn} as output,
-          session_id as session_id,
-          0 as is_deleted,
-          timestamp,
-          created_at,
-          updated_at
-        FROM traces
-        WHERE id = {traceId: String}
-        AND project_id = {projectId: String}
-        ${timestamp ? `AND toDate(timestamp) = toDate({timestamp: DateTime64(3)})` : ""}
-        ${fromTimestamp ? `AND timestamp >= {fromTimestamp: DateTime64(3)}` : ""}
-        ORDER BY event_ts DESC
-        LIMIT 1
-      `;
-
-      return queryClickhouse<TraceRecordReadType>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService,
-      });
+      return rows;
     },
   });
 
+  // keep existing domain conversion logic
   const res = records.map((record) =>
     convertClickhouseToDomain(record, renderingProps),
   );
@@ -552,6 +515,8 @@ export const getTraceById = async ({
 
   return res.shift();
 };
+
+
 
 export const getTracesGroupedByName = async (
   projectId: string,

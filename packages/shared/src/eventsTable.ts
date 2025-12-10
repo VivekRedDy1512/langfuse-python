@@ -236,3 +236,10 @@ export const eventsTableCols: ColumnDefinition[] = [
     internal: "", // handled by comment filter helpers
   },
 ];
+
+import { z } from "zod";
+
+const serverSchema = z.object({
+  // existing stuff...
+  PY_BACKEND_URL: z.string().url(),
+});
